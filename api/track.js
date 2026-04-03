@@ -164,15 +164,7 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again in a few minutes.' });
     }
 
-    const track = accepted.track?.z0 || {};
-    const rawEvents = track.z || [];
-
-    const events = rawEvents.map((e) => ({
-      date: e.a || '',
-      description: maskDescription(e.b || ''),
-      location: maskLocation(e.c || ''),
-    }));
-
+    const { events, carrier, destination } = extractEvents(accepted.track);
     const statusInfo = TAG_STATUS[accepted.tag] || { label: 'Processing', step: 1, color: '#6366F1' };
 
     // If no events but the number was accepted, return a "registered" state
@@ -183,7 +175,7 @@ export default async function handler(req, res) {
         statusStep: 1,
         statusColor: '#818CF8',
         carrier: 'International Carrier',
-        destinationCountry: track.d || '',
+        destinationCountry: destination,
         events: [],
         lastUpdate: null,
         message: 'Your shipment has been registered. Tracking events will appear within 24 hours.',
@@ -195,8 +187,8 @@ export default async function handler(req, res) {
       status: statusInfo.label,
       statusStep: statusInfo.step,
       statusColor: statusInfo.color,
-      carrier: maskCarrier(track.c || ''),
-      destinationCountry: track.d || '',
+      carrier: maskCarrier(carrier),
+      destinationCountry: destination,
       events,
       lastUpdate: events[0]?.date || null,
     });
@@ -221,16 +213,53 @@ async function registerNumber(number, headers) {
     await fetch(`${API_BASE}/register`, {
       method: 'POST',
       headers,
-      body: JSON.stringify([{ number }]),
+      body: JSON.stringify([{ number, auto_detection: true }]),
     });
   } catch (_) {
     // ignore registration errors
   }
 }
 
+// Extract all events from all track segments (z0, z1, z2...)
+function extractEvents(track) {
+  if (!track) return { events: [], carrier: '', destination: '' };
+
+  const allEvents = [];
+  let carrier = '';
+  let destination = '';
+
+  // Iterate over all possible segment keys: z0, z1, z2...
+  for (let i = 0; i <= 5; i++) {
+    const segment = track[`z${i}`];
+    if (!segment) continue;
+    if (!carrier && segment.c) carrier = segment.c;
+    if (!destination && segment.d) destination = segment.d;
+    const events = segment.z || [];
+    for (const e of events) {
+      allEvents.push({
+        date: e.a || '',
+        description: maskDescription(e.b || ''),
+        location: maskLocation(e.c || ''),
+      });
+    }
+  }
+
+  // Deduplicate events by date+description
+  const seen = new Set();
+  const unique = allEvents.filter((e) => {
+    const key = `${e.date}|${e.description}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { events: unique, carrier, destination };
+}
+
 function hasEvents(data, number) {
   if (!data || data.code !== 0) return false;
   const accepted = data.data?.accepted?.[0];
   if (!accepted) return false;
-  return (accepted.track?.z0?.z || []).length > 0;
+  const { events } = extractEvents(accepted.track);
+  return events.length > 0;
 }
