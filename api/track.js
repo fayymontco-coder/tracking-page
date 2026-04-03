@@ -89,14 +89,14 @@ function maskDescription(text) {
 // ---- Status mapping (v2.2 uses track_info.latest_status.status) ----
 const STATUS_MAP = {
   NotFound:     { label: 'Pending',            step: 0, color: '#9CA3AF' },
-  InfoReceived: { label: 'Info Received',       step: 1, color: '#818CF8' },
-  PickedUp:     { label: 'Picked Up',           step: 1, color: '#818CF8' },
-  InTransit:    { label: 'In Transit',          step: 2, color: '#3B82F6' },
-  Undelivered:  { label: 'Delivery Attempted',  step: 3, color: '#F59E0B' },
-  Delivered:    { label: 'Delivered',           step: 4, color: '#10B981' },
-  Returning:    { label: 'Returning to Sender', step: 3, color: '#EF4444' },
+  InfoReceived: { label: 'Info Received',       step: 1, color: '#2A555A' },
+  PickedUp:     { label: 'Picked Up',           step: 1, color: '#2A555A' },
+  InTransit:    { label: 'In Transit',          step: 2, color: '#3D7A80' },
+  Undelivered:  { label: 'Delivery Attempted',  step: 3, color: '#B07D2E' },
+  Delivered:    { label: 'Delivered',           step: 4, color: '#2A7A4B' },
+  Returning:    { label: 'Returning to Sender', step: 3, color: '#B04040' },
   Returned:     { label: 'Returned',            step: 4, color: '#6B7280' },
-  Expired:      { label: 'Expired',             step: 1, color: '#EF4444' },
+  Expired:      { label: 'Expired',             step: 1, color: '#B04040' },
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
