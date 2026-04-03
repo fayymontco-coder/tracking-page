@@ -1,14 +1,15 @@
 const SEVENTEEN_TRACK_API_KEY = process.env.SEVENTEEN_TRACK_API_KEY;
 const API_BASE = 'https://api.17track.net/track/v2.2';
 
-// ----- Masking dictionaries -----
-
+// ---- Masking: carrier names ----
 const CARRIER_MASKS = [
   [/china\s*post/gi, 'International Mail'],
   [/yanwen/gi, 'Global Express'],
   [/yun\s*express/gi, 'Global Express'],
+  [/yunexpress/gi, 'Global Express'],
   [/cainiao/gi, 'Global Logistics'],
   [/sf\s*express/gi, 'Priority Express'],
+  [/shunfeng/gi, 'Priority Express'],
   [/ems\s*china/gi, 'International Express Mail'],
   [/\bems\b/gi, 'International Express Mail'],
   [/4px/gi, 'Global Fulfillment'],
@@ -21,9 +22,14 @@ const CARRIER_MASKS = [
   [/yunda/gi, 'Express Courier'],
   [/best\s*express/gi, 'Express Courier'],
   [/jd\s*logistics/gi, 'Global Logistics'],
-  [/shunfeng/gi, 'Priority Express'],
+  [/wishpost/gi, 'Global Fulfillment'],
+  [/wanb/gi, 'International Logistics'],
+  [/joom/gi, 'Global Logistics'],
+  [/sdh/gi, 'Global Express'],
+  [/shein/gi, 'Express Courier'],
 ];
 
+// ---- Masking: Chinese cities and regions ----
 const CHINA_LOCATIONS = [
   'shanghai', 'beijing', 'guangzhou', 'shenzhen', 'hangzhou',
   'chengdu', 'wuhan', 'nanjing', 'tianjin', 'chongqing',
@@ -33,6 +39,14 @@ const CHINA_LOCATIONS = [
   'nanchang', 'taiyuan', 'nanning', 'shijiazhuang', 'urumqi',
   'qingdao', 'dalian', 'shenyang', 'wuxi', 'zhuhai',
   'zhongshan', 'huizhou', 'changchun', 'guiyang', 'lanzhou',
+  'jiaxing', 'taizhou', 'wuhu', 'nantong', 'yangzhou',
+  'zhenjiang', 'linyi', 'weifang', 'yantai', 'jinhua',
+  'shaoxing', 'huzhou', 'jiangmen', 'zhaoqing', 'maoming',
+  'guangdong', 'zhejiang', 'jiangsu', 'shandong', 'fujian',
+  'liaoning', 'hebei', 'henan', 'hubei', 'hunan',
+  'sichuan', 'yunnan', 'guizhou', 'shanxi', 'anhui',
+  'jilin', 'heilongjiang', 'guangxi', 'inner mongolia',
+  'sorting center', 'transit center',
 ];
 
 function maskCarrier(name) {
@@ -48,15 +62,14 @@ function maskLocation(loc) {
   if (!loc) return '';
   const lower = loc.toLowerCase();
 
-  // If any known Chinese city or "china" is in the location, replace
   const hasChina =
     lower.includes('china') ||
     lower.includes(', cn') ||
+    lower.match(/\bcn\b/) ||
     CHINA_LOCATIONS.some((city) => lower.includes(city));
 
   if (hasChina) return 'International Warehouse';
 
-  // Strip trailing country code artifacts
   return loc.replace(/,?\s*CN\s*$/i, '').trim();
 }
 
@@ -72,29 +85,35 @@ function maskDescription(text) {
   result = result.replace(/\bCN\b/g, '');
 
   for (const city of CHINA_LOCATIONS) {
+    if (city.length < 4) continue; // avoid replacing short strings
     const re = new RegExp(`\\b${city}\\b`, 'gi');
-    result = result.replace(re, 'Origin City');
+    result = result.replace(re, 'Origin Facility');
   }
+
+  // Clean up sorting center / operation center references
+  result = result.replace(/sorting\s*center/gi, 'logistics center');
+  result = result.replace(/operation\s*center/gi, 'logistics center');
 
   return result.trim();
 }
 
-// ----- Status mapping -----
-
+// ---- Status mapping ----
 const TAG_STATUS = {
-  NotFound:    { label: 'Pending',             step: 0, color: '#9CA3AF' },
-  InfoReceived:{ label: 'Info Received',        step: 1, color: '#818CF8' },
-  PickedUp:    { label: 'Picked Up',            step: 1, color: '#818CF8' },
-  InTransit:   { label: 'In Transit',           step: 2, color: '#3B82F6' },
-  Undelivered: { label: 'Delivery Attempted',   step: 3, color: '#F59E0B' },
-  Delivered:   { label: 'Delivered',            step: 4, color: '#10B981' },
-  Returning:   { label: 'Returning to Sender',  step: 3, color: '#EF4444' },
-  Returned:    { label: 'Returned',             step: 4, color: '#6B7280' },
-  Expired:     { label: 'Expired',              step: 1, color: '#EF4444' },
+  NotFound:     { label: 'Pending',            step: 0, color: '#9CA3AF' },
+  InfoReceived: { label: 'Info Received',       step: 1, color: '#818CF8' },
+  PickedUp:     { label: 'Picked Up',           step: 1, color: '#818CF8' },
+  InTransit:    { label: 'In Transit',          step: 2, color: '#3B82F6' },
+  Undelivered:  { label: 'Delivery Attempted',  step: 3, color: '#F59E0B' },
+  Delivered:    { label: 'Delivered',           step: 4, color: '#10B981' },
+  Returning:    { label: 'Returning to Sender', step: 3, color: '#EF4444' },
+  Returned:     { label: 'Returned',            step: 4, color: '#6B7280' },
+  Expired:      { label: 'Expired',             step: 1, color: '#EF4444' },
 };
 
-// ----- Handler -----
+// ---- Small delay helper ----
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---- Main handler ----
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -112,37 +131,37 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server not configured' });
   }
 
+  const trackingNumber = number.trim().toUpperCase();
+
   const headers = {
     '17token': SEVENTEEN_TRACK_API_KEY,
     'Content-Type': 'application/json',
   };
 
   try {
-    // Register (idempotent — safe to call every time)
-    await fetch(`${API_BASE}/register`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify([{ number: number.trim() }]),
-    });
+    // Step 1: Try fetching directly (number may already be registered)
+    let infoData = await fetchTrackInfo(trackingNumber, headers);
 
-    // Fetch tracking info
-    const infoRes = await fetch(`${API_BASE}/gettrackinfo`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify([{ number: number.trim() }]),
-    });
+    // Step 2: If no data yet, register and retry after a short delay
+    if (!hasEvents(infoData, trackingNumber)) {
+      await registerNumber(trackingNumber, headers);
+      await sleep(3000); // wait 3 seconds for 17track to fetch data
+      infoData = await fetchTrackInfo(trackingNumber, headers);
+    }
 
-    const infoData = await infoRes.json();
+    // Step 3: If still no data, register again and do a final retry
+    if (!hasEvents(infoData, trackingNumber)) {
+      await sleep(3000);
+      infoData = await fetchTrackInfo(trackingNumber, headers);
+    }
 
     if (infoData.code !== 0) {
-      return res.status(502).json({ error: 'Tracking service error' });
+      return res.status(502).json({ error: 'Tracking service error. Please try again.' });
     }
 
     const accepted = infoData.data?.accepted?.[0];
     if (!accepted) {
-      const rejected = infoData.data?.rejected?.[0];
-      const reason = rejected?.error?.message || 'Tracking number not found';
-      return res.status(404).json({ error: reason });
+      return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again in a few minutes.' });
     }
 
     const track = accepted.track?.z0 || {};
@@ -155,6 +174,21 @@ export default async function handler(req, res) {
     }));
 
     const statusInfo = TAG_STATUS[accepted.tag] || { label: 'Processing', step: 1, color: '#6366F1' };
+
+    // If no events but the number was accepted, return a "registered" state
+    if (events.length === 0) {
+      return res.status(200).json({
+        number: accepted.number,
+        status: 'Info Received',
+        statusStep: 1,
+        statusColor: '#818CF8',
+        carrier: 'International Carrier',
+        destinationCountry: track.d || '',
+        events: [],
+        lastUpdate: null,
+        message: 'Your shipment has been registered. Tracking events will appear within 24 hours.',
+      });
+    }
 
     return res.status(200).json({
       number: accepted.number,
@@ -169,6 +203,34 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('[track-api]', err);
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Connection error. Please try again.' });
   }
+}
+
+async function fetchTrackInfo(number, headers) {
+  const res = await fetch(`${API_BASE}/gettrackinfo`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify([{ number }]),
+  });
+  return res.json();
+}
+
+async function registerNumber(number, headers) {
+  try {
+    await fetch(`${API_BASE}/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify([{ number }]),
+    });
+  } catch (_) {
+    // ignore registration errors
+  }
+}
+
+function hasEvents(data, number) {
+  if (!data || data.code !== 0) return false;
+  const accepted = data.data?.accepted?.[0];
+  if (!accepted) return false;
+  return (accepted.track?.z0?.z || []).length > 0;
 }
