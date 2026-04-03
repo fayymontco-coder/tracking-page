@@ -1,0 +1,12 @@
+{
+  "name": "tracking-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless proxy for 17track order tracking",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "devDependencies": {
+    "vercel": "^34.0.0"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "functions": {
+    "api/track.js": {
+      "memory": 128,
+      "maxDuration": 15
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
+  ]
+}
