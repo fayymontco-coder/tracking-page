@@ -23,13 +23,13 @@ const CARRIER_MASKS = [
   [/best\s*express/gi, 'Express Courier'],
   [/jd\s*logistics/gi, 'Global Logistics'],
   [/wishpost/gi, 'Global Fulfillment'],
-  [/wanb/gi, 'International Logistics'],
-  [/joom/gi, 'Global Logistics'],
   [/sdh/gi, 'Global Express'],
+  [/闪电猴/g, 'Global Express'],
   [/shein/gi, 'Express Courier'],
+  [/wanb/gi, 'International Logistics'],
 ];
 
-// ---- Masking: Chinese cities and regions ----
+// ---- Masking: Chinese cities ----
 const CHINA_LOCATIONS = [
   'shanghai', 'beijing', 'guangzhou', 'shenzhen', 'hangzhou',
   'chengdu', 'wuhan', 'nanjing', 'tianjin', 'chongqing',
@@ -43,10 +43,7 @@ const CHINA_LOCATIONS = [
   'zhenjiang', 'linyi', 'weifang', 'yantai', 'jinhua',
   'shaoxing', 'huzhou', 'jiangmen', 'zhaoqing', 'maoming',
   'guangdong', 'zhejiang', 'jiangsu', 'shandong', 'fujian',
-  'liaoning', 'hebei', 'henan', 'hubei', 'hunan',
-  'sichuan', 'yunnan', 'guizhou', 'shanxi', 'anhui',
-  'jilin', 'heilongjiang', 'guangxi', 'inner mongolia',
-  'sorting center', 'transit center',
+  'guangxi', 'yunnan', 'guizhou', 'sichuan', 'anhui',
 ];
 
 function maskCarrier(name) {
@@ -61,44 +58,36 @@ function maskCarrier(name) {
 function maskLocation(loc) {
   if (!loc) return '';
   const lower = loc.toLowerCase();
-
   const hasChina =
     lower.includes('china') ||
     lower.includes(', cn') ||
     lower.match(/\bcn\b/) ||
     CHINA_LOCATIONS.some((city) => lower.includes(city));
-
   if (hasChina) return 'International Warehouse';
-
   return loc.replace(/,?\s*CN\s*$/i, '').trim();
 }
 
 function maskDescription(text) {
   if (!text) return '';
   let result = text;
-
   for (const [pattern, replacement] of CARRIER_MASKS) {
     result = result.replace(pattern, replacement);
   }
-
   result = result.replace(/\bChina\b/gi, 'Origin');
   result = result.replace(/\bCN\b/g, '');
-
   for (const city of CHINA_LOCATIONS) {
-    if (city.length < 4) continue; // avoid replacing short strings
+    if (city.length < 4) continue;
     const re = new RegExp(`\\b${city}\\b`, 'gi');
     result = result.replace(re, 'Origin Facility');
   }
-
-  // Clean up sorting center / operation center references
   result = result.replace(/sorting\s*center/gi, 'logistics center');
   result = result.replace(/operation\s*center/gi, 'logistics center');
-
+  result = result.replace(/delivery\s*point/gi, 'delivery facility');
   return result.trim();
 }
 
-// ---- Status mapping ----
-const TAG_STATUS = {
+// ---- Status mapping (v2.2 uses track_info.latest_status.status) ----
+const STATUS_MAP = {
   NotFound:     { label: 'Pending',            step: 0, color: '#9CA3AF' },
   InfoReceived: { label: 'Info Received',       step: 1, color: '#818CF8' },
   PickedUp:     { label: 'Picked Up',           step: 1, color: '#818CF8' },
@@ -110,8 +99,50 @@ const TAG_STATUS = {
   Expired:      { label: 'Expired',             step: 1, color: '#EF4444' },
 };
 
-// ---- Small delay helper ----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- Parse v2.2 response structure ----
+function parseAccepted(accepted) {
+  const trackInfo = accepted.track_info || {};
+  const latestStatus = trackInfo.latest_status || {};
+  const tracking = trackInfo.tracking || {};
+  const providers = tracking.providers || [];
+
+  // Collect all events from all providers
+  const allEvents = [];
+  let carrierName = '';
+
+  for (const p of providers) {
+    if (!carrierName && p.provider?.name) {
+      carrierName = p.provider.name;
+    }
+    for (const e of (p.events || [])) {
+      allEvents.push({
+        date: e.time_iso || e.time_utc || '',
+        description: maskDescription(e.description || ''),
+        location: maskLocation(e.location || ''),
+      });
+    }
+  }
+
+  // Deduplicate
+  const seen = new Set();
+  const events = allEvents.filter((e) => {
+    const key = `${e.date}|${e.description}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Status
+  const rawStatus = latestStatus.status || accepted.tag || 'NotFound';
+  const statusInfo = STATUS_MAP[rawStatus] || { label: 'Processing', step: 1, color: '#6366F1' };
+
+  // Destination country
+  const destination = trackInfo.shipping_info?.recipient_address?.country || '';
+
+  return { events, carrierName, statusInfo, destination };
+}
 
 // ---- Main handler ----
 export default async function handler(req, res) {
@@ -126,53 +157,42 @@ export default async function handler(req, res) {
   if (!number || number.trim().length < 5) {
     return res.status(400).json({ error: 'Valid tracking number required' });
   }
-
   if (!SEVENTEEN_TRACK_API_KEY) {
     return res.status(500).json({ error: 'Server not configured' });
   }
 
   const trackingNumber = number.trim().toUpperCase();
-
   const headers = {
     '17token': SEVENTEEN_TRACK_API_KEY,
     'Content-Type': 'application/json',
   };
 
   try {
-    // Step 1: Try fetching directly (number may already be registered)
-    let infoData = await fetchTrackInfo(trackingNumber, headers);
+    // Try fetching first (may already be registered)
+    let data = await fetchInfo(trackingNumber, headers);
+    let accepted = data.data?.accepted?.[0];
 
-    // Step 2: If no data yet, register and retry after a short delay
-    if (!hasEvents(infoData, trackingNumber)) {
-      await registerNumber(trackingNumber, headers);
-      await sleep(3000); // wait 3 seconds for 17track to fetch data
-      infoData = await fetchTrackInfo(trackingNumber, headers);
-    }
-
-    // Step 3: If still no data, register again and do a final retry
-    if (!hasEvents(infoData, trackingNumber)) {
-      await sleep(3000);
-      infoData = await fetchTrackInfo(trackingNumber, headers);
-    }
-
-    if (infoData.code !== 0) {
-      return res.status(502).json({ error: 'Tracking service error. Please try again.' });
-    }
-
-    const accepted = infoData.data?.accepted?.[0];
+    // If not found, register then retry
     if (!accepted) {
-      return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again in a few minutes.' });
+      await register(trackingNumber, headers);
+      await sleep(3000);
+      data = await fetchInfo(trackingNumber, headers);
+      accepted = data.data?.accepted?.[0];
     }
 
-    // DEBUG: log full accepted object
-    console.log('[track-debug] accepted keys:', Object.keys(accepted));
-    console.log('[track-debug] full accepted:', JSON.stringify(accepted));
+    // One more retry
+    if (!accepted) {
+      await sleep(3000);
+      data = await fetchInfo(trackingNumber, headers);
+      accepted = data.data?.accepted?.[0];
+    }
 
-    const { events, carrier, destination } = extractEvents(accepted.track);
-    console.log('[track-debug] events found:', events.length);
-    const statusInfo = TAG_STATUS[accepted.tag] || { label: 'Processing', step: 1, color: '#6366F1' };
+    if (!accepted) {
+      return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again.' });
+    }
 
-    // If no events but the number was accepted, return a "registered" state
+    const { events, carrierName, statusInfo, destination } = parseAccepted(accepted);
+
     if (events.length === 0) {
       return res.status(200).json({
         number: accepted.number,
@@ -192,19 +212,19 @@ export default async function handler(req, res) {
       status: statusInfo.label,
       statusStep: statusInfo.step,
       statusColor: statusInfo.color,
-      carrier: maskCarrier(carrier),
+      carrier: maskCarrier(carrierName),
       destinationCountry: destination,
       events,
       lastUpdate: events[0]?.date || null,
     });
 
   } catch (err) {
-    console.error('[track-api]', err);
+    console.error('[track-api error]', err);
     return res.status(500).json({ error: 'Connection error. Please try again.' });
   }
 }
 
-async function fetchTrackInfo(number, headers) {
+async function fetchInfo(number, headers) {
   const res = await fetch(`${API_BASE}/gettrackinfo`, {
     method: 'POST',
     headers,
@@ -213,58 +233,12 @@ async function fetchTrackInfo(number, headers) {
   return res.json();
 }
 
-async function registerNumber(number, headers) {
+async function register(number, headers) {
   try {
     await fetch(`${API_BASE}/register`, {
       method: 'POST',
       headers,
       body: JSON.stringify([{ number, auto_detection: true }]),
     });
-  } catch (_) {
-    // ignore registration errors
-  }
-}
-
-// Extract all events from all track segments (z0, z1, z2...)
-function extractEvents(track) {
-  if (!track) return { events: [], carrier: '', destination: '' };
-
-  const allEvents = [];
-  let carrier = '';
-  let destination = '';
-
-  // Iterate over all possible segment keys: z0, z1, z2...
-  for (let i = 0; i <= 5; i++) {
-    const segment = track[`z${i}`];
-    if (!segment) continue;
-    if (!carrier && segment.c) carrier = segment.c;
-    if (!destination && segment.d) destination = segment.d;
-    const events = segment.z || [];
-    for (const e of events) {
-      allEvents.push({
-        date: e.a || '',
-        description: maskDescription(e.b || ''),
-        location: maskLocation(e.c || ''),
-      });
-    }
-  }
-
-  // Deduplicate events by date+description
-  const seen = new Set();
-  const unique = allEvents.filter((e) => {
-    const key = `${e.date}|${e.description}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  return { events: unique, carrier, destination };
-}
-
-function hasEvents(data, number) {
-  if (!data || data.code !== 0) return false;
-  const accepted = data.data?.accepted?.[0];
-  if (!accepted) return false;
-  const { events } = extractEvents(accepted.track);
-  return events.length > 0;
+  } catch (_) {}
 }
