@@ -164,10 +164,9 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again in a few minutes.' });
     }
 
-    // DEBUG: log raw track object to Vercel logs
-    console.log('[track-debug] accepted.tag:', accepted.tag);
-    console.log('[track-debug] track keys:', Object.keys(accepted.track || {}));
-    console.log('[track-debug] raw track:', JSON.stringify(accepted.track));
+    // DEBUG: log full accepted object
+    console.log('[track-debug] accepted keys:', Object.keys(accepted));
+    console.log('[track-debug] full accepted:', JSON.stringify(accepted));
 
     const { events, carrier, destination } = extractEvents(accepted.track);
     console.log('[track-debug] events found:', events.length);
