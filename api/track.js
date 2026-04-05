@@ -88,38 +88,80 @@ function maskDescription(text) {
 
 // ---- Status mapping (v2.2 uses track_info.latest_status.status) ----
 const STATUS_MAP = {
-  NotFound:     { label: 'Pending',            step: 0, color: '#9CA3AF' },
-  InfoReceived: { label: 'Info Received',       step: 1, color: '#2A555A' },
-  PickedUp:     { label: 'Picked Up',           step: 1, color: '#2A555A' },
-  InTransit:    { label: 'In Transit',          step: 2, color: '#3D7A80' },
-  Undelivered:  { label: 'Delivery Attempted',  step: 3, color: '#B07D2E' },
-  Delivered:    { label: 'Delivered',           step: 4, color: '#2A7A4B' },
-  Returning:    { label: 'Returning to Sender', step: 3, color: '#B04040' },
-  Returned:     { label: 'Returned',            step: 4, color: '#6B7280' },
-  Expired:      { label: 'Expired',             step: 1, color: '#B04040' },
+  en: {
+    NotFound:     { label: 'Pending',            step: 0, color: '#9CA3AF' },
+    InfoReceived: { label: 'Info Received',       step: 1, color: '#2A555A' },
+    PickedUp:     { label: 'Picked Up',           step: 1, color: '#2A555A' },
+    InTransit:    { label: 'In Transit',          step: 2, color: '#3D7A80' },
+    Undelivered:  { label: 'Delivery Attempted',  step: 3, color: '#B07D2E' },
+    Delivered:    { label: 'Delivered',           step: 4, color: '#2A7A4B' },
+    Returning:    { label: 'Returning to Sender', step: 3, color: '#B04040' },
+    Returned:     { label: 'Returned',            step: 4, color: '#6B7280' },
+    Expired:      { label: 'Expired',             step: 1, color: '#B04040' },
+  },
+  de: {
+    NotFound:     { label: 'Ausstehend',          step: 0, color: '#9CA3AF' },
+    InfoReceived: { label: 'Info erhalten',        step: 1, color: '#2A555A' },
+    PickedUp:     { label: 'Abgeholt',             step: 1, color: '#2A555A' },
+    InTransit:    { label: 'Unterwegs',            step: 2, color: '#3D7A80' },
+    Undelivered:  { label: 'Zustellversuch',       step: 3, color: '#B07D2E' },
+    Delivered:    { label: 'Zugestellt',           step: 4, color: '#2A7A4B' },
+    Returning:    { label: 'Rücksendung',          step: 3, color: '#B04040' },
+    Returned:     { label: 'Zurückgesendet',       step: 4, color: '#6B7280' },
+    Expired:      { label: 'Abgelaufen',           step: 1, color: '#B04040' },
+  },
 };
+
+// German translations for common tracking event descriptions
+const DE_EVENT_TRANSLATIONS = [
+  [/arrive at the (logistics|sorting) center for operation and transfer/gi, 'Im Logistikzentrum angekommen'],
+  [/cargo leaving the (logistics|operation) center/gi, 'Fracht verlässt das Logistikzentrum'],
+  [/arrive at the delivery (facility|point)/gi, 'Im Zustellzentrum angekommen'],
+  [/shipment information received/gi, 'Sendungsinformationen erhalten'],
+  [/out for delivery/gi, 'In Zustellung'],
+  [/delivered/gi, 'Zugestellt'],
+  [/picked up/gi, 'Abgeholt'],
+  [/in transit/gi, 'Unterwegs'],
+  [/departure from origin/gi, 'Abgang vom Ursprungsort'],
+  [/arrived at destination country/gi, 'Im Zielland angekommen'],
+  [/customs clearance/gi, 'Zollabfertigung'],
+  [/customs cleared/gi, 'Zoll freigegeben'],
+  [/held at customs/gi, 'Beim Zoll zurückgehalten'],
+  [/international warehouse/gi, 'Internationales Lager'],
+  [/origin facility/gi, 'Versandzentrum'],
+  [/origin city/gi, 'Versandort'],
+  [/package received/gi, 'Paket erhalten'],
+  [/processing at facility/gi, 'In Bearbeitung'],
+  [/departed facility/gi, 'Versandzentrum verlassen'],
+  [/transfer to airline/gi, 'Übergabe an Fluggesellschaft'],
+  [/arrived at airline/gi, 'Bei Fluggesellschaft angekommen'],
+  [/flight departed/gi, 'Flug abgeflogen'],
+  [/flight arrived/gi, 'Flug angekommen'],
+  [/delivery attempted/gi, 'Zustellversuch'],
+  [/delivery failed/gi, 'Zustellung fehlgeschlagen'],
+  [/returning to sender/gi, 'Rücksendung zum Absender'],
+  [/returned to sender/gi, 'An Absender zurückgesendet'],
+];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- Parse v2.2 response structure ----
-function parseAccepted(accepted) {
-  const trackInfo = accepted.track_info || {};
+function parseAccepted(accepted, language = 'en') {
+  const trackInfo    = accepted.track_info || {};
   const latestStatus = trackInfo.latest_status || {};
-  const tracking = trackInfo.tracking || {};
-  const providers = tracking.providers || [];
+  const providers    = trackInfo.tracking?.providers || [];
 
-  // Collect all events from all providers
   const allEvents = [];
   let carrierName = '';
 
   for (const p of providers) {
-    if (!carrierName && p.provider?.name) {
-      carrierName = p.provider.name;
-    }
+    if (!carrierName && p.provider?.name) carrierName = p.provider.name;
     for (const e of (p.events || [])) {
+      let desc = maskDescription(e.description || '');
+      if (language === 'de') desc = translateToGerman(desc);
       allEvents.push({
         date: e.time_iso || e.time_utc || '',
-        description: maskDescription(e.description || ''),
+        description: desc,
         location: maskLocation(e.location || ''),
       });
     }
@@ -134,14 +176,21 @@ function parseAccepted(accepted) {
     return true;
   });
 
-  // Status
-  const rawStatus = latestStatus.status || accepted.tag || 'NotFound';
-  const statusInfo = STATUS_MAP[rawStatus] || { label: 'Processing', step: 1, color: '#6366F1' };
-
-  // Destination country
+  const rawStatus  = latestStatus.status || accepted.tag || 'NotFound';
+  const statusMap  = STATUS_MAP[language] || STATUS_MAP.en;
+  const statusInfo = statusMap[rawStatus] || { label: language === 'de' ? 'In Bearbeitung' : 'Processing', step: 1, color: '#6366F1' };
   const destination = trackInfo.shipping_info?.recipient_address?.country || '';
 
   return { events, carrierName, statusInfo, destination };
+}
+
+function translateToGerman(text) {
+  if (!text) return text;
+  let result = text;
+  for (const [pattern, translation] of DE_EVENT_TRANSLATIONS) {
+    result = result.replace(pattern, translation);
+  }
+  return result;
 }
 
 // ---- Main handler ----
@@ -153,9 +202,11 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { number } = req.query;
+  const { number, lang } = req.query;
+  const language = lang === 'de' ? 'de' : 'en';
+
   if (!number || number.trim().length < 5) {
-    return res.status(400).json({ error: 'Valid tracking number required' });
+    return res.status(400).json({ error: language === 'de' ? 'Gültige Sendungsnummer erforderlich' : 'Valid tracking number required' });
   }
   if (!SEVENTEEN_TRACK_API_KEY) {
     return res.status(500).json({ error: 'Server not configured' });
@@ -191,19 +242,18 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: 'Tracking number not found. Please check the number and try again.' });
     }
 
-    const { events, carrierName, statusInfo, destination } = parseAccepted(accepted);
+    const { events, carrierName, statusInfo, destination } = parseAccepted(accepted, language);
 
     if (events.length === 0) {
       return res.status(200).json({
         number: accepted.number,
-        status: 'Info Received',
+        status: language === 'de' ? 'Info erhalten' : 'Info Received',
         statusStep: 1,
-        statusColor: '#818CF8',
-        carrier: 'International Carrier',
+        statusColor: '#2A555A',
+        carrier: language === 'de' ? 'Internationaler Versand' : 'International Carrier',
         destinationCountry: destination,
         events: [],
         lastUpdate: null,
-        message: 'Your shipment has been registered. Tracking events will appear within 24 hours.',
       });
     }
 
